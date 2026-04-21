@@ -142,6 +142,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Trivy
+        run: |
+          sudo apt-get install -y wget apt-transport-https gnupg
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y trivy
+
       - name: Download image artifacts
         uses: actions/download-artifact@v4
         with:
@@ -157,35 +167,14 @@ jobs:
           docker tag localhost:5000/worker:${{ github.sha }} worker:scan
           docker tag localhost:5000/frontend:${{ github.sha }} frontend:scan
 
-      - name: Scan API image
-        uses: aquasecurity/trivy-action@v0.20.0
-        with:
-          image-ref: api:scan
-          format: sarif
-          output: trivy-api.sarif
-          severity: CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Scan Worker image
-        uses: aquasecurity/trivy-action@v0.20.0
-        with:
-          image-ref: worker:scan
-          format: sarif
-          output: trivy-worker.sarif
-          severity: CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Scan Frontend image
-        uses: aquasecurity/trivy-action@v0.20.0
-        with:
-          image-ref: frontend:scan
-          format: sarif
-          output: trivy-frontend.sarif
-          severity: CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
+      - name: Scan all images
+        run: |
+          trivy image --format sarif --output trivy-api.sarif \
+            --severity CRITICAL --exit-code 1 --ignore-unfixed api:scan
+          trivy image --format sarif --output trivy-worker.sarif \
+            --severity CRITICAL --exit-code 1 --ignore-unfixed worker:scan
+          trivy image --format sarif --output trivy-frontend.sarif \
+            --severity CRITICAL --exit-code 1 --ignore-unfixed frontend:scan
 
       - name: Upload SARIF results
         if: always()
