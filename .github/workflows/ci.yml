@@ -148,16 +148,19 @@ jobs:
           name: docker-images
           path: /tmp/images
 
-      - name: Load Docker images
+      - name: Load and retag Docker images
         run: |
           docker load -i /tmp/images/api.tar
           docker load -i /tmp/images/worker.tar
           docker load -i /tmp/images/frontend.tar
+          docker tag localhost:5000/api:${{ github.sha }} api:scan
+          docker tag localhost:5000/worker:${{ github.sha }} worker:scan
+          docker tag localhost:5000/frontend:${{ github.sha }} frontend:scan
 
       - name: Scan API image
         uses: aquasecurity/trivy-action@v0.20.0
         with:
-          image-ref: localhost:5000/api:${{ github.sha }}
+          image-ref: api:scan
           format: sarif
           output: trivy-api.sarif
           severity: CRITICAL
@@ -167,7 +170,7 @@ jobs:
       - name: Scan Worker image
         uses: aquasecurity/trivy-action@v0.20.0
         with:
-          image-ref: localhost:5000/worker:${{ github.sha }}
+          image-ref: worker:scan
           format: sarif
           output: trivy-worker.sarif
           severity: CRITICAL
@@ -177,7 +180,7 @@ jobs:
       - name: Scan Frontend image
         uses: aquasecurity/trivy-action@v0.20.0
         with:
-          image-ref: localhost:5000/frontend:${{ github.sha }}
+          image-ref: frontend:scan
           format: sarif
           output: trivy-frontend.sarif
           severity: CRITICAL
