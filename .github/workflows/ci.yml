@@ -227,18 +227,27 @@ jobs:
       - name: Wait for all services to be healthy
         run: |
           echo "Waiting for services to become healthy (max 120s)..."
-          timeout 120 bash -c '
-            until docker compose ps --format json | \
-              python3 -c "
-import sys, json
-lines = sys.stdin.read().strip().split(chr(10))
-services = [json.loads(l) for l in lines if l.strip()]
-unhealthy = [s[\"Service\"] for s in services if s.get(\"Health\") != \"healthy\"]
-if unhealthy:
-    print(\"Not yet healthy:\", unhealthy)
-    sys.exit(1)
-print(\"All services healthy!\")
-"; do sleep 5; done'
+          ELAPSED=0
+          SERVICES=(redis api worker frontend)
+          check_healthy() {
+            for svc in "${SERVICES[@]}"; do
+              id=$(docker compose ps -q "$svc" 2>/dev/null | head -1)
+              [ -z "$id" ] && echo "$svc: not running" && return 1
+              health=$(docker inspect --format="{{.State.Health.Status}}" "$id" 2>/dev/null)
+              [ "$health" != "healthy" ] && echo "$svc: $health" && return 1
+            done
+            return 0
+          }
+          until check_healthy; do
+            ELAPSED=$((ELAPSED + 5))
+            if [ $ELAPSED -ge 120 ]; then
+              echo "Timed out waiting for healthy services"
+              docker compose ps
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "All services healthy!"
 
       - name: Submit job and assert completion
         run: |
@@ -305,16 +314,28 @@ print(\"All services healthy!\")
 
       - name: Wait for initial stack to be healthy
         run: |
-          timeout 120 bash -c '
-            until docker compose ps --format json | \
-              python3 -c "
-import sys, json
-lines = sys.stdin.read().strip().split(chr(10))
-services = [json.loads(l) for l in lines if l.strip()]
-unhealthy = [s[\"Service\"] for s in services if s.get(\"Health\") != \"healthy\"]
-if unhealthy: sys.exit(1)
-print(\"Stack healthy!\")
-"; do sleep 5; done'
+          echo "Waiting for initial stack to be healthy (max 120s)..."
+          ELAPSED=0
+          SERVICES=(redis api worker frontend)
+          check_healthy() {
+            for svc in "${SERVICES[@]}"; do
+              id=$(docker compose ps -q "$svc" 2>/dev/null | head -1)
+              [ -z "$id" ] && echo "$svc: not running" && return 1
+              health=$(docker inspect --format="{{.State.Health.Status}}" "$id" 2>/dev/null)
+              [ "$health" != "healthy" ] && echo "$svc: $health" && return 1
+            done
+            return 0
+          }
+          until check_healthy; do
+            ELAPSED=$((ELAPSED + 5))
+            if [ $ELAPSED -ge 120 ]; then
+              echo "Timed out waiting for healthy services"
+              docker compose ps
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Stack healthy!"
 
       - name: Rolling update
         run: |
