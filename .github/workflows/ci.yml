@@ -176,12 +176,26 @@ jobs:
           trivy image --format sarif --output trivy-frontend.sarif \
             --severity CRITICAL --exit-code 1 --ignore-unfixed frontend:scan
 
-      - name: Upload SARIF results
+      - name: Upload API SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: .
-          category: trivy
+          sarif_file: trivy-api.sarif
+          category: trivy-api
+
+      - name: Upload Worker SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-worker.sarif
+          category: trivy-worker
+
+      - name: Upload Frontend SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend
 
   # STAGE 5 - INTEGRATION TEST
   integration-test:
