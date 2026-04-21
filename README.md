@@ -49,7 +49,7 @@ git --version
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/hng14-stage2-devops.git
+git clone https://github.com/mustaphaagboola/hng14-stage2-devops.git
 cd hng14-stage2-devops
 ```
 
