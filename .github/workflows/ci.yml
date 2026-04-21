@@ -1,0 +1,328 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # ─────────────────────────────────────────────
+  # STAGE 1: LINT
+  # ─────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python — flake8
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Lint Python files
+        run: flake8 api/main.py worker/worker.py worker/healthcheck.py
+
+      # JavaScript — eslint
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
+
+      - name: Lint JavaScript
+        run: npx eslint app.js
+        working-directory: frontend
+
+      # Dockerfiles — hadolint
+      - name: Install hadolint
+        run: |
+          wget -qO /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x /usr/local/bin/hadolint
+
+      - name: Lint Dockerfiles
+        run: hadolint api/Dockerfile worker/Dockerfile frontend/Dockerfile
+
+  # ─────────────────────────────────────────────
+  # STAGE 2: TEST
+  # ─────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+        working-directory: api
+
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
+        working-directory: api
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: api/coverage.xml
+
+  # ─────────────────────────────────────────────
+  # STAGE 3: BUILD
+  # ─────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: true
+          tags: |
+            localhost:5000/api:${{ github.sha }}
+            localhost:5000/api:latest
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            localhost:5000/worker:${{ github.sha }}
+            localhost:5000/worker:latest
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            localhost:5000/frontend:${{ github.sha }}
+            localhost:5000/frontend:latest
+
+      - name: Export images as tarballs
+        run: |
+          docker pull localhost:5000/api:${{ github.sha }}
+          docker pull localhost:5000/worker:${{ github.sha }}
+          docker pull localhost:5000/frontend:${{ github.sha }}
+          docker save localhost:5000/api:${{ github.sha }}      -o /tmp/api.tar
+          docker save localhost:5000/worker:${{ github.sha }}   -o /tmp/worker.tar
+          docker save localhost:5000/frontend:${{ github.sha }} -o /tmp/frontend.tar
+
+      - name: Upload image artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/*.tar
+          retention-days: 1
+
+  # ─────────────────────────────────────────────
+  # STAGE 4: SECURITY SCAN
+  # ─────────────────────────────────────────────
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+
+      - name: Load Docker images
+        run: |
+          docker load -i /tmp/images/api.tar
+          docker load -i /tmp/images/worker.tar
+          docker load -i /tmp/images/frontend.tar
+
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: localhost:5000/api:${{ github.sha }}
+          format: sarif
+          output: trivy-api.sarif
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Scan Worker image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: localhost:5000/worker:${{ github.sha }}
+          format: sarif
+          output: trivy-worker.sarif
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Scan Frontend image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: localhost:5000/frontend:${{ github.sha }}
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Upload SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .
+          category: trivy
+
+  # ─────────────────────────────────────────────
+  # STAGE 5: INTEGRATION TEST
+  # ─────────────────────────────────────────────
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: security-scan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create environment file
+        run: |
+          echo "REDIS_PASSWORD=ci-integration-password" > .env
+          echo "APP_ENV=test" >> .env
+
+      - name: Build and start stack
+        run: docker compose up --build -d
+
+      - name: Wait for all services to be healthy
+        run: |
+          echo "Waiting for services to become healthy (max 120s)..."
+          timeout 120 bash -c '
+            until docker compose ps --format json | \
+              python3 -c "
+import sys, json
+lines = sys.stdin.read().strip().split(chr(10))
+services = [json.loads(l) for l in lines if l.strip()]
+unhealthy = [s[\"Service\"] for s in services if s.get(\"Health\") != \"healthy\"]
+if unhealthy:
+    print(\"Not yet healthy:\", unhealthy)
+    sys.exit(1)
+print(\"All services healthy!\")
+"; do sleep 5; done'
+
+      - name: Submit job and assert completion
+        run: |
+          set -e
+
+          RESPONSE=$(curl -sf -X POST http://localhost:3000/submit)
+          JOB_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+          echo "Submitted job: $JOB_ID"
+
+          MAX_WAIT=30
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            STATUS=$(curl -sf "http://localhost:3000/status/$JOB_ID" | \
+              python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
+            echo "Status: $STATUS"
+            if [ "$STATUS" = "completed" ]; then
+              echo "Integration test PASSED — job completed successfully."
+              exit 0
+            fi
+            sleep 2
+            ELAPSED=$((ELAPSED + 2))
+          done
+
+          echo "FAILED: Job did not reach 'completed' within ${MAX_WAIT}s"
+          exit 1
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v
+
+  # ─────────────────────────────────────────────
+  # STAGE 6: DEPLOY (main branch only)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+
+      - name: Load Docker images
+        run: |
+          docker load -i /tmp/images/api.tar
+          docker load -i /tmp/images/worker.tar
+          docker load -i /tmp/images/frontend.tar
+
+      - name: Create environment file
+        run: |
+          echo "REDIS_PASSWORD=${REDIS_PASSWORD}" > .env
+          echo "APP_ENV=production" >> .env
+        env:
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+
+      - name: Start initial stack
+        run: docker compose up -d
+
+      - name: Wait for initial stack to be healthy
+        run: |
+          timeout 120 bash -c '
+            until docker compose ps --format json | \
+              python3 -c "
+import sys, json
+lines = sys.stdin.read().strip().split(chr(10))
+services = [json.loads(l) for l in lines if l.strip()]
+unhealthy = [s[\"Service\"] for s in services if s.get(\"Health\") != \"healthy\"]
+if unhealthy: sys.exit(1)
+print(\"Stack healthy!\")
+"; do sleep 5; done'
+
+      - name: Rolling update
+        run: |
+          chmod +x scripts/deploy.sh
+          GITHUB_SHA=${{ github.sha }} bash scripts/deploy.sh
+        env:
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+
+      - name: Tear down after deploy simulation
+        if: always()
+        run: docker compose down -v
